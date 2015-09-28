@@ -2,21 +2,30 @@ package com.codepath.goohleimagesearcher.activities;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.support.v4.app.FragmentManager;
+import android.support.v4.view.MenuItemCompat;
+import android.support.v7.app.ActionBarActivity;
 import android.support.v7.app.AppCompatActivity;
-import android.util.Log;
+import android.support.v7.widget.SearchView;
 import android.view.Menu;
+import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
-import android.widget.Button;
 import android.widget.EditText;
-import android.widget.GridView;
 import android.widget.Toast;
+import android.support.v4.app.DialogFragment;
+import com.codepath.goohleimagesearcher.dialogs.FilterDialog;
+import com.codepath.goohleimagesearcher.dialogs.ImageDisplayDialog;
+import com.codepath.goohleimagesearcher.helperMethods.EndlessScrollListener;
+import com.codepath.goohleimagesearcher.helperMethods.ImageSearchClient;
+import com.codepath.goohleimagesearcher.helperMethods.NetworkConnectivity;
+import com.codepath.goohleimagesearcher.helperMethods.SettingOptions;
+import com.etsy.android.grid.StaggeredGridView;
 
 import com.codepath.goohleimagesearcher.adapters.ImageResultsAdapter;
 import com.codepath.goohleimagesearcher.model.ImageResult;
 import com.codepath.goohleimagesearcher.R;
-import com.loopj.android.http.AsyncHttpClient;
 import com.loopj.android.http.JsonHttpResponseHandler;
 import cz.msebera.android.httpclient.Header;
 
@@ -27,12 +36,13 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 
 
-public class SearchActivity extends AppCompatActivity {
+public  class SearchActivity extends ActionBarActivity implements FilterDialog.ImageFiltersDialogListener {
     private EditText etSearch;
-    private GridView gvResults;
+    private StaggeredGridView gvResults;
     ArrayList<ImageResult> imageResults;
     private ImageResultsAdapter aImageResults;
-
+    private boolean isFetching;
+    private SettingOptions settingOptions;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -45,24 +55,23 @@ public class SearchActivity extends AppCompatActivity {
         aImageResults =new ImageResultsAdapter(this,imageResults);
         //Link the adapter to the gridview
         gvResults.setAdapter(aImageResults);
+        gvResults.setOnScrollListener(new EndlessScrollListener() {
+            @Override
+            public void onLoadMore(int page, int totalItemsCount) {
+                imageSearch(false);
+            }
+        });
+        settingOptions=new SettingOptions("");
     }
 
     private void setupViews(){
-        etSearch=(EditText)findViewById(R.id.etQuery);
-        gvResults=(GridView)findViewById(R.id.gvSearchItems);
+        //etSearch=(EditText)findViewById(R.id.etQuery);
+        gvResults=(StaggeredGridView)findViewById(R.id.gvSearchItems);
         gvResults.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                //Launch the image display activity
-                //Creating an intent
-            Intent i =new Intent(SearchActivity.this,ImageDisplayActivity.class);
-                //Get the image results to display
-            ImageResult result=imageResults.get(position);
-                //Pass the image results into the intent
-                i.putExtra("result",result);
-                //Launch the new activity
-                startActivity(i);
-
+                showImageDetailDialog(aImageResults.getItem(position));
             }
         });
     }
@@ -70,33 +79,78 @@ public class SearchActivity extends AppCompatActivity {
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         // Inflate the menu; this adds items to the action bar if it is present.
-        getMenuInflater().inflate(R.menu.menu_search, menu);
-        return true;
-    }
-    public void onImageSearch(View view) {
-        String query=etSearch.getText().toString();
-       // Toast.makeText(this, "Serach for :" + query, Toast.LENGTH_SHORT).show();
-        AsyncHttpClient client=new AsyncHttpClient();
-        //https://ajax.googleapis.com/ajax/services/search/images?v=1.0&q=android&rsz-8
-        String searchUrl="https://ajax.googleapis.com/ajax/services/search/images?v=1.0&q="+query+"&rsz=8";
-        client.get(searchUrl,new JsonHttpResponseHandler(){
-         @Override
-         public void onSuccess(int statusCode, Header[] headers, JSONObject response) {
-            Log.d("DEBUG", response.toString());
-             JSONArray imageResultJson=null;
-             try {
-                 imageResultJson=response.getJSONObject("responseData").getJSONArray("results");
-                 imageResults.clear();//clear the existing images from the array(in cases of new search)
-                 //When you make changes to the adapter it does modify the underlying data
-                 //imageResults.addAll(ImageResult.fromJSONArray(imageResultJson));
-                 aImageResults.addAll(ImageResult.fromJSONArray(imageResultJson));
-                // aImageResults.notifyDataSetChanged();
+        MenuInflater inflater = getMenuInflater();
+        inflater.inflate(R.menu.menu_search, menu);
+        MenuItem searchItem = menu.findItem(R.id.action_search);
+        final SearchView searchView = (SearchView) MenuItemCompat.getActionView(searchItem);
+        searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+            @Override
+            public boolean onQueryTextSubmit(String query) {
+                // perform query here
+                settingOptions.searchTerm = query;
+                imageSearch(true);
+                searchView.clearFocus();
+                return true;
+            }
 
-             } catch (JSONException e) {
-                 e.printStackTrace();
-             }
-             Log.i("INFO",imageResults.toString());
-         }
+            @Override
+            public boolean onQueryTextChange(String newText) {
+                return false;
+            }
+        });
+        return super.onCreateOptionsMenu(menu);
+    }
+
+    public void imageSearch(final boolean isNewQuery) {
+        if (!NetworkConnectivity.isNetworkAvailable(this)) {
+            Toast.makeText(getApplicationContext(), "No internet! Try again later...", Toast.LENGTH_SHORT).show();
+        }
+        if (isFetching) {
+            return;
+        }
+        ImageSearchClient.searchImages(settingOptions, new JsonHttpResponseHandler() {
+            @Override
+            public void onSuccess(int statusCode, Header[] headers, JSONObject response) {
+                isFetching = false;
+                try {
+                    if (isNewQuery) {
+                        settingOptions.start = "0";
+                        imageResults.clear();
+                    }
+
+                    JSONObject cursorJSON = response.getJSONObject("responseData").getJSONObject("cursor");
+                    int currentPage = cursorJSON.getInt("currentPageIndex");
+
+                    JSONArray pages = cursorJSON.getJSONArray("pages");
+                    if ((pages.length() - 1) > currentPage) {
+                        JSONObject page = pages.getJSONObject(currentPage + 1);
+                        settingOptions.start = page.getString("start");
+                    } else if (!isNewQuery) {
+                        // stop searching once we have reached the end
+                        Toast.makeText(getApplicationContext(), "No more results for this search!", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+
+                    JSONArray imagesJSON = response.getJSONObject("responseData").getJSONArray("results");
+                    for (int i = 0; i < imagesJSON.length(); i++) {
+                        JSONObject imageJSON = imagesJSON.getJSONObject(i);
+                        ImageResult image = new ImageResult();
+                        image.title = imageJSON.getString("title");
+                        image.content = imageJSON.getString("content");
+                        image.fullUrl = imageJSON.getString("url");
+                        image.tbUrl = imageJSON.getString("tbUrl");
+                        image.originalContextUrl = imageJSON.getString("originalContextUrl");
+                        imageResults.add(image);
+                    }
+                    aImageResults.notifyDataSetChanged();
+
+                    if (aImageResults.getCount() < 12) {
+                        imageSearch(false);
+                    }
+                } catch (JSONException e) {
+                    Toast.makeText(getApplicationContext(), "Search failed. Try again.", Toast.LENGTH_SHORT).show();
+                }
+            }
         });
     }
 
@@ -109,11 +163,35 @@ public class SearchActivity extends AppCompatActivity {
 
         //noinspection SimplifiableIfStatement
         if (id == R.id.action_settings) {
+            showFiltersDialog();
             return true;
         }
 
         return super.onOptionsItemSelected(item);
     }
 
+    private void showFiltersDialog() {
+        FragmentManager fm = getSupportFragmentManager();
+        FilterDialog imageFiltersDialog = FilterDialog.newInstance("Advanced Filters",
+                settingOptions);
+        imageFiltersDialog.show(fm, "settings_filter");
+    }
+    private void showImageDetailDialog(ImageResult image) {
+        FragmentManager fm = getSupportFragmentManager();
+        ImageDisplayDialog imageDisplayDialog = ImageDisplayDialog.newInstance(image);
+        imageDisplayDialog.show(fm,"activity_image_display");
+        //imageDetailDialog.show(fm, "activity_image_display");
+    }
 
+    @Override
+    public void onFinishImageFiltersDialog(SettingOptions searchOptions) {
+        this.settingOptions = searchOptions;
+        imageSearch(true);
+    }
 }
+
+
+
+
+
+

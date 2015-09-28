@@ -20,25 +20,40 @@ import java.util.List;
  */
 public class ImageResultsAdapter extends ArrayAdapter<ImageResult> {
 
+    private static class ViewHolder {
+        ImageView ivImage;
+    }
+
     public ImageResultsAdapter(Context context, List<ImageResult> images) {
         super(context,R.layout.item_image_result, images);
     }
 
     public View getView(int position,View convertView,ViewGroup parent){
+        ViewHolder viewHolder;
        ImageResult imageInfo=getItem(position);
         if (convertView == null){
             convertView= LayoutInflater.from(getContext()).inflate(R.layout.item_image_result,parent,false);
+            viewHolder=new ViewHolder();
+            viewHolder.ivImage=(ImageView)convertView.findViewById(R.id.ivImage);
+            convertView.setTag(viewHolder);
+        }else{
+            viewHolder = (ViewHolder)convertView.getTag();
         }
-        ImageView ivImage=(ImageView)convertView.findViewById(R.id.ivImage);
-        TextView txtDesc=(TextView)convertView.findViewById(R.id.tvDesc);
+
+
+        //TextView txtDesc=(TextView)convertView.findViewById(R.id.tvDesc);
         //clear out image from last time
-        ivImage.setImageResource(0);
+        //ivImage.setImageResource(0);
         //Populate the title and remote image url
-        txtDesc.setText(Html.fromHtml(imageInfo.title));
+        //txtDesc.setText(Html.fromHtml(imageInfo.title));
         //Remotely download the image data in the background
-        Picasso.with(getContext()).load(imageInfo.thumbUrl).into(ivImage);
-        //Return the completed view to be dispalyed
-        return convertView;
+        // set image using Picasso
+        Picasso.with(getContext())
+                .load(imageInfo.fullUrl)
+                .into(viewHolder.ivImage);
+
+
+        return  convertView;
 
     }
 }
